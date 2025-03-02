@@ -5,6 +5,7 @@ export declare class WebSocketCore {
     constructor(url: string);
     connect(): void;
     sendMessage(command: string, data: any, files?: Record<string, Uint8Array>, timeout?: number): Promise<WebSocketResponse>;
+    subscribe(topic: string, callback: (data: any, files?: Record<string, Uint8Array>) => void): () => void;
     on<K extends keyof WebSocketEventMap>(event: K, handler: WebSocketEventMap[K]): () => void;
     off<K extends keyof WebSocketEventMap>(event: K, handler: WebSocketEventMap[K]): void;
     get isConnected(): boolean;

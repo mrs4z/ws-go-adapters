@@ -212,7 +212,7 @@ Request.TypeRequest = 0;
 Request.TypeAnswer = 1;
 Request.TypeEvent = 2;
 
-var _WebSocketCore_instances, _WebSocketCore_connected, _WebSocketCore_idCounter, _WebSocketCore_waitMap, _WebSocketCore_handlers, _WebSocketCore_ws, _WebSocketCore_emit;
+var _WebSocketCore_instances, _WebSocketCore_connected, _WebSocketCore_idCounter, _WebSocketCore_waitMap, _WebSocketCore_handlers, _WebSocketCore_ws, _WebSocketCore_messageQueue, _WebSocketCore_topicSubscribers, _WebSocketCore_processQueue, _WebSocketCore_emit;
 class WebSocketCore {
     constructor(url) {
         _WebSocketCore_instances.add(this);
@@ -222,6 +222,8 @@ class WebSocketCore {
         _WebSocketCore_waitMap.set(this, new Map());
         _WebSocketCore_handlers.set(this, new Map());
         _WebSocketCore_ws.set(this, null);
+        _WebSocketCore_messageQueue.set(this, []);
+        _WebSocketCore_topicSubscribers.set(this, new Map());
         this.connect();
     }
     connect() {
@@ -230,6 +232,7 @@ class WebSocketCore {
         __classPrivateFieldGet(this, _WebSocketCore_ws, "f").onopen = () => {
             __classPrivateFieldSet(this, _WebSocketCore_connected, true, "f");
             __classPrivateFieldGet(this, _WebSocketCore_instances, "m", _WebSocketCore_emit).call(this, 'connected');
+            __classPrivateFieldGet(this, _WebSocketCore_instances, "m", _WebSocketCore_processQueue).call(this);
         };
         __classPrivateFieldGet(this, _WebSocketCore_ws, "f").onclose = () => {
             if (__classPrivateFieldGet(this, _WebSocketCore_connected, "f")) {
@@ -243,36 +246,107 @@ class WebSocketCore {
             __classPrivateFieldGet(this, _WebSocketCore_ws, "f")?.close();
         };
         __classPrivateFieldGet(this, _WebSocketCore_ws, "f").onmessage = event => {
-            const req = Request.Read(event.data);
-            if (req.Type === Request.TypeAnswer) {
-                const waitItem = __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").get(req.ID);
-                if (waitItem) {
-                    clearTimeout(waitItem.timerId);
-                    waitItem.resolve({ data: req.Data, files: req.Files });
-                    __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").delete(req.ID);
+            try {
+                const req = Request.Read(event.data);
+                if (req.Type === Request.TypeAnswer) {
+                    const waitItem = __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").get(req.ID);
+                    if (waitItem) {
+                        clearTimeout(waitItem.timerId);
+                        waitItem.resolve({ data: req.Data, files: req.Files });
+                        __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").delete(req.ID);
+                    }
+                }
+                else if (req.Type === Request.TypeEvent) {
+                    // Handle topic-based subscriptions
+                    if (req.Command && __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").has(req.Command)) {
+                        const subscribers = __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").get(req.Command);
+                        if (subscribers) {
+                            subscribers.forEach(callback => {
+                                try {
+                                    callback(req.Data, req.Files);
+                                }
+                                catch (err) {
+                                    console.error('Error in topic subscriber callback:', err);
+                                }
+                            });
+                        }
+                    }
+                    // General message event
+                    __classPrivateFieldGet(this, _WebSocketCore_instances, "m", _WebSocketCore_emit).call(this, 'message', {
+                        command: req.Command,
+                        data: req.Data,
+                        files: req.Files,
+                    });
                 }
             }
-            else if (req.Type === Request.TypeEvent) {
-                __classPrivateFieldGet(this, _WebSocketCore_instances, "m", _WebSocketCore_emit).call(this, 'message', req);
+            catch (err) {
+                console.error('Error processing WebSocket message:', err);
+                __classPrivateFieldGet(this, _WebSocketCore_instances, "m", _WebSocketCore_emit).call(this, 'error', err instanceof Error
+                    ? err
+                    : new Error('Error processing WebSocket message'));
             }
         };
     }
     async sendMessage(command, data, files = {}, timeout = 5) {
-        var _a;
-        if (!__classPrivateFieldGet(this, _WebSocketCore_ws, "f") || __classPrivateFieldGet(this, _WebSocketCore_ws, "f").readyState !== WebSocket.OPEN) {
-            throw new Error('WebSocket is not connected');
-        }
-        const id = __classPrivateFieldSet(this, _WebSocketCore_idCounter, (_a = __classPrivateFieldGet(this, _WebSocketCore_idCounter, "f"), ++_a), "f");
-        const timeoutTs = Date.now() / 1000 + timeout;
+        // Всегда возвращаем Promise, который либо отправит сообщение немедленно,
+        // либо добавит его в очередь для отправки после установления соединения
         return new Promise((resolve, reject) => {
-            const req = new Request(command, data, files, Request.TypeRequest, timeoutTs, id);
-            const timerId = window.setTimeout(() => {
-                __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").delete(id);
-                reject(new Error('Request timeout'));
-            }, timeout * 1000);
-            __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").set(id, { resolve, reject, timerId });
-            __classPrivateFieldGet(this, _WebSocketCore_ws, "f").send(req.ByteArray());
+            var _a;
+            // Если соединение открыто, отправляем сразу
+            if (__classPrivateFieldGet(this, _WebSocketCore_connected, "f") &&
+                __classPrivateFieldGet(this, _WebSocketCore_ws, "f") &&
+                __classPrivateFieldGet(this, _WebSocketCore_ws, "f").readyState === WebSocket.OPEN) {
+                const id = __classPrivateFieldSet(this, _WebSocketCore_idCounter, (_a = __classPrivateFieldGet(this, _WebSocketCore_idCounter, "f"), ++_a), "f");
+                const timeoutTs = Date.now() / 1000 + timeout;
+                const req = new Request(command, data, files, Request.TypeRequest, timeoutTs, id);
+                const timerId = window.setTimeout(() => {
+                    __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").delete(id);
+                    reject(new Error('Request timeout'));
+                }, timeout * 1000);
+                __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").set(id, { resolve, reject, timerId });
+                __classPrivateFieldGet(this, _WebSocketCore_ws, "f").send(req.ByteArray());
+            }
+            else {
+                // Иначе добавляем в очередь для последующей отправки
+                __classPrivateFieldGet(this, _WebSocketCore_messageQueue, "f").push({
+                    command,
+                    data,
+                    files,
+                    timeout,
+                    resolver: { resolve, reject },
+                });
+                // Устанавливаем тайм-аут на случай, если соединение не будет установлено
+                window.setTimeout(() => {
+                    // Находим и удаляем сообщение из очереди
+                    const index = __classPrivateFieldGet(this, _WebSocketCore_messageQueue, "f").findIndex(msg => msg.command === command && msg.resolver.resolve === resolve);
+                    if (index !== -1) {
+                        __classPrivateFieldGet(this, _WebSocketCore_messageQueue, "f").splice(index, 1);
+                        reject(new Error('WebSocket connection timed out'));
+                    }
+                }, Math.max(timeout * 1000, 10000)); // Используем максимальное значение - либо тайм-аут сообщения, либо 10 секунд
+                // Если соединение отсутствует, но не было попытки соединения, пробуем соединиться
+                if (!__classPrivateFieldGet(this, _WebSocketCore_ws, "f") || __classPrivateFieldGet(this, _WebSocketCore_ws, "f").readyState === WebSocket.CLOSED) {
+                    this.connect();
+                }
+            }
         });
+    }
+    // Subscribe to a specific topic/command
+    subscribe(topic, callback) {
+        if (!__classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").has(topic)) {
+            __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").set(topic, new Set());
+        }
+        __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").get(topic).add(callback);
+        // Return unsubscribe function
+        return () => {
+            const subscribers = __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").get(topic);
+            if (subscribers) {
+                subscribers.delete(callback);
+                if (subscribers.size === 0) {
+                    __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").delete(topic);
+                }
+            }
+        };
     }
     on(event, handler) {
         if (!__classPrivateFieldGet(this, _WebSocketCore_handlers, "f").has(event)) {
@@ -294,9 +368,38 @@ class WebSocketCore {
         __classPrivateFieldGet(this, _WebSocketCore_ws, "f")?.close();
         __classPrivateFieldGet(this, _WebSocketCore_handlers, "f").clear();
         __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").clear();
+        __classPrivateFieldGet(this, _WebSocketCore_topicSubscribers, "f").clear();
+        __classPrivateFieldSet(this, _WebSocketCore_messageQueue, [], "f");
     }
 }
-_WebSocketCore_connected = new WeakMap(), _WebSocketCore_idCounter = new WeakMap(), _WebSocketCore_waitMap = new WeakMap(), _WebSocketCore_handlers = new WeakMap(), _WebSocketCore_ws = new WeakMap(), _WebSocketCore_instances = new WeakSet(), _WebSocketCore_emit = function _WebSocketCore_emit(event, ...args) {
+_WebSocketCore_connected = new WeakMap(), _WebSocketCore_idCounter = new WeakMap(), _WebSocketCore_waitMap = new WeakMap(), _WebSocketCore_handlers = new WeakMap(), _WebSocketCore_ws = new WeakMap(), _WebSocketCore_messageQueue = new WeakMap(), _WebSocketCore_topicSubscribers = new WeakMap(), _WebSocketCore_instances = new WeakSet(), _WebSocketCore_processQueue = function _WebSocketCore_processQueue() {
+    var _a;
+    if (!__classPrivateFieldGet(this, _WebSocketCore_connected, "f") ||
+        !__classPrivateFieldGet(this, _WebSocketCore_ws, "f") ||
+        __classPrivateFieldGet(this, _WebSocketCore_ws, "f").readyState !== WebSocket.OPEN) {
+        return;
+    }
+    // Process any queued messages
+    while (__classPrivateFieldGet(this, _WebSocketCore_messageQueue, "f").length > 0) {
+        const msg = __classPrivateFieldGet(this, _WebSocketCore_messageQueue, "f").shift();
+        if (msg) {
+            // Вместо рекурсивного вызова sendMessage, отправляем сообщение напрямую
+            const id = __classPrivateFieldSet(this, _WebSocketCore_idCounter, (_a = __classPrivateFieldGet(this, _WebSocketCore_idCounter, "f"), ++_a), "f");
+            const timeoutTs = Date.now() / 1000 + msg.timeout;
+            const req = new Request(msg.command, msg.data, msg.files, Request.TypeRequest, timeoutTs, id);
+            const timerId = window.setTimeout(() => {
+                __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").delete(id);
+                msg.resolver.reject(new Error('Request timeout'));
+            }, msg.timeout * 1000);
+            __classPrivateFieldGet(this, _WebSocketCore_waitMap, "f").set(id, {
+                resolve: msg.resolver.resolve,
+                reject: msg.resolver.reject,
+                timerId,
+            });
+            __classPrivateFieldGet(this, _WebSocketCore_ws, "f").send(req.ByteArray());
+        }
+    }
+}, _WebSocketCore_emit = function _WebSocketCore_emit(event, ...args) {
     const handlers = __classPrivateFieldGet(this, _WebSocketCore_handlers, "f").get(event);
     if (handlers) {
         handlers.forEach(handler => handler(...args));
@@ -320,6 +423,9 @@ const createWebSocketPlugin = (url) => {
                 sendMessage: (command, data, files, timeout) => {
                     return socket.sendMessage(command, data, files, timeout);
                 },
+                subscribe: (topic, callback) => {
+                    return socket.subscribe(topic, callback);
+                },
             };
             app.provide(WebSocketSymbol, websocket);
             app.config.globalProperties.$websocket = websocket;
@@ -334,6 +440,28 @@ const useWebSocket = () => {
     }
     return websocket;
 };
+// Topic-specific composable
+const useWebSocketTopic = (topic) => {
+    const { subscribe, state } = useWebSocket();
+    const data = ref(null);
+    const files = ref(undefined);
+    const unsubscribe = subscribe(topic, (newData, newFiles) => {
+        data.value = newData;
+        if (newFiles) {
+            files.value = newFiles;
+        }
+    });
+    // Cleanup function
+    const cleanup = () => {
+        unsubscribe();
+    };
+    return {
+        data,
+        files,
+        isConnected: state.isConnected,
+        cleanup,
+    };
+};
 
-export { WebSocketSymbol, createWebSocketPlugin, useWebSocket };
+export { WebSocketSymbol, createWebSocketPlugin, useWebSocket, useWebSocketTopic };
 //# sourceMappingURL=index.js.map

@@ -1,9 +1,10 @@
 import React, {
 	createContext,
+	useCallback,
 	useContext,
 	useEffect,
+	useMemo,
 	useState,
-	useCallback,
 } from 'react'
 import { WebSocketCore } from '../core/ws-core'
 import { WebSocketMessage, WebSocketResponse } from '../types'
@@ -17,6 +18,10 @@ interface WebSocketContextValue {
 		timeout?: number
 	) => Promise<WebSocketResponse>
 	lastMessage: WebSocketMessage | null
+	subscribe: (
+		topic: string,
+		callback: (data: any, files?: Record<string, Uint8Array>) => void
+	) => () => void
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null)
@@ -35,11 +40,21 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
 	const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
 
 	useEffect(() => {
-		socket.on('connected', () => setIsConnected(true))
-		socket.on('disconnected', () => setIsConnected(false))
-		socket.on('message', setLastMessage)
+		const connectedHandler = () => setIsConnected(true)
+		const disconnectedHandler = () => setIsConnected(false)
+		const messageHandler = (message: WebSocketMessage) =>
+			setLastMessage(message)
 
-		return () => socket.destroy()
+		socket.on('connected', connectedHandler)
+		socket.on('disconnected', disconnectedHandler)
+		socket.on('message', messageHandler)
+
+		return () => {
+			socket.off('connected', connectedHandler)
+			socket.off('disconnected', disconnectedHandler)
+			socket.off('message', messageHandler)
+			socket.destroy()
+		}
 	}, [socket])
 
 	const sendMessage = useCallback(
@@ -54,10 +69,28 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
 		[socket]
 	)
 
+	const subscribe = useCallback(
+		(
+			topic: string,
+			callback: (data: any, files?: Record<string, Uint8Array>) => void
+		) => {
+			return socket.subscribe(topic, callback)
+		},
+		[socket]
+	)
+
+	const contextValue = useMemo(
+		() => ({
+			isConnected,
+			sendMessage,
+			lastMessage,
+			subscribe,
+		}),
+		[isConnected, sendMessage, lastMessage, subscribe]
+	)
+
 	return (
-		<WebSocketContext.Provider
-			value={{ isConnected, sendMessage, lastMessage }}
-		>
+		<WebSocketContext.Provider value={contextValue}>
 			{children}
 		</WebSocketContext.Provider>
 	)
@@ -69,4 +102,30 @@ export const useWebSocket = () => {
 		throw new Error('useWebSocket must be used within WebSocketProvider')
 	}
 	return context
+}
+
+// Custom hook for topic-based subscriptions
+export const useWebSocketTopic = <T = any,>(topic: string) => {
+	const { subscribe, isConnected } = useWebSocket()
+	const [data, setData] = useState<T | null>(null)
+	const [files, setFiles] = useState<Record<string, Uint8Array> | undefined>(
+		undefined
+	)
+
+	useEffect(() => {
+		const unsubscribe = subscribe(topic, (newData, newFiles) => {
+			setData(newData as T)
+			if (newFiles) {
+				setFiles(newFiles)
+			}
+		})
+
+		return unsubscribe
+	}, [topic, subscribe])
+
+	return {
+		data,
+		files,
+		isConnected,
+	}
 }

@@ -1,3 +1,4 @@
+import { Ref } from 'vue';
 export interface WebSocketMessage {
     command: string;
     data: any;
@@ -15,4 +16,19 @@ export interface WebSocketEventMap {
     disconnected: () => void;
     message: (message: WebSocketMessage) => void;
     error: (error: Error) => void;
+}
+export interface TopicSubscriber<T = any> {
+    (data: T, files?: Record<string, Uint8Array>): void;
+}
+declare module '@vue/runtime-core' {
+    interface ComponentCustomProperties {
+        $websocket: {
+            state: {
+                isConnected: Ref<boolean>;
+                lastMessage: Ref<WebSocketMessage | null>;
+            };
+            sendMessage: (command: string, data: any, files?: Record<string, Uint8Array>, timeout?: number) => Promise<WebSocketResponse>;
+            subscribe: (topic: string, callback: (data: any, files?: Record<string, Uint8Array>) => void) => () => void;
+        };
+    }
 }
