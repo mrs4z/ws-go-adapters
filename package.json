@@ -9,20 +9,27 @@
 		"dist"
 	],
 	"exports": {
-		".": {
-			"import": "./dist/index.esm.js",
-			"require": "./dist/index.js",
-			"types": "./dist/types/index.d.ts"
-		},
-		"./react": {
-			"import": "./dist/react/index.js",
-			"types": "./dist/types/react/index.d.ts"
-		},
-		"./vue": {
-			"import": "./dist/vue/index.js",
-			"types": "./dist/types/vue/index.d.ts"
-		}
-	},
+    ".": {
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.js",
+      "types": "./dist/types/index.d.ts"
+    },
+    "./react": {
+      "import": "./dist/react/index.js",
+      "types": "./dist/types/react/index.d.ts"
+    },
+    "./vue": {
+      "import": "./dist/vue/index.js",
+      "types": "./dist/types/vue/index.d.ts"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "*": ["./dist/types/index.d.ts"],
+      "react": ["./dist/types/react/index.d.ts"],
+      "vue": ["./dist/types/vue/index.d.ts"]
+    }
+  },
 	"scripts": {
 		"build": "rollup -c",
 		"dev": "rollup -c -w",
